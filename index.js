@@ -37,6 +37,97 @@ app.get("/", (req, res) => {
   res.send({ status: "ok", message: "Digital Life Lessons API Server is running" });
 });
 
+// User Profile Endpoints
+app.get("/users/profile/:email", async (req, res) => {
+  try {
+    if (!db) db = client.db(DB_NAME);
+    const { email } = req.params;
+
+    // Check user in 'user' collection (Better Auth) or 'users'
+    const user =
+      (await db.collection("user").findOne({ email })) ||
+      (await db.collection("users").findOne({ email }));
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // Get user stats (total lessons created, total likes, total saves)
+    const userLessonsCount = await db
+      .collection("lessons")
+      .countDocuments({ creatorEmail: email });
+
+    const lessonsStats = await db
+      .collection("lessons")
+      .aggregate([
+        { $match: { creatorEmail: email } },
+        {
+          $group: {
+            _id: null,
+            totalLikes: { $sum: { $ifNull: ["$likesCount", 0] } },
+            totalSaves: { $sum: { $ifNull: ["$savesCount", 0] } },
+          },
+        },
+      ])
+      .toArray();
+
+    const stats = lessonsStats[0] || { totalLikes: 0, totalSaves: 0 };
+
+    res.json({
+      ...user,
+      totalLessons: userLessonsCount,
+      totalLikes: stats.totalLikes,
+      totalSaves: stats.totalSaves,
+    });
+  } catch (err) {
+    console.error("Error fetching user profile:", err);
+    res.status(500).json({ message: "Failed to fetch user profile" });
+  }
+});
+
+app.patch("/users/profile", async (req, res) => {
+  try {
+    if (!db) db = client.db(DB_NAME);
+    const { email, name, image, photoURL } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ message: "Email is required" });
+    }
+
+    const finalPhoto = image || photoURL;
+    const updateDoc = {
+      ...(name && { name: name.trim() }),
+      ...(finalPhoto !== undefined && {
+        image: finalPhoto.trim(),
+        photoURL: finalPhoto.trim(),
+      }),
+      updatedAt: new Date(),
+    };
+
+    // Update 'user' collection
+    await db.collection("user").updateOne({ email }, { $set: updateDoc });
+
+    // Update 'users' collection as well
+    await db.collection("users").updateOne({ email }, { $set: updateDoc }, { upsert: true });
+
+    // Also update creatorName and creatorPhoto in user's lessons so changes reflect platform-wide!
+    if (name || finalPhoto) {
+      const lessonUpdates = {};
+      if (name) lessonUpdates.creatorName = name.trim();
+      if (finalPhoto) lessonUpdates.creatorPhoto = finalPhoto.trim();
+
+      await db
+        .collection("lessons")
+        .updateMany({ creatorEmail: email }, { $set: lessonUpdates });
+    }
+
+    res.json({ success: true, message: "Profile updated successfully" });
+  } catch (err) {
+    console.error("Error updating user profile:", err);
+    res.status(500).json({ message: "Failed to update profile" });
+  }
+});
+
 // 1. Get featured lessons (for homepage)
 app.get("/lessons/featured", async (req, res) => {
   try {
