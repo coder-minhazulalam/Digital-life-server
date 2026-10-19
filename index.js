@@ -37,7 +37,7 @@ app.get("/", (req, res) => {
   res.send({ status: "ok", message: "Digital Life Lessons API Server is running" });
 });
 
-// Get featured lessons (for homepage)
+// 1. Get featured lessons (for homepage)
 app.get("/lessons/featured", async (req, res) => {
   try {
     if (!db) db = client.db(DB_NAME);
@@ -50,7 +50,6 @@ app.get("/lessons/featured", async (req, res) => {
       .limit(6)
       .toArray();
 
-    // If less than 4 featured, fallback to newest public lessons to ensure homepage has lessons
     if (!featuredLessons || featuredLessons.length < 4) {
       const publicLessons = await db
         .collection("lessons")
@@ -67,7 +66,56 @@ app.get("/lessons/featured", async (req, res) => {
   }
 });
 
-// Get all lessons with optional filtering / sorting / pagination
+// 2. Dynamic Section: Top Contributors of the Week
+app.get("/lessons/top-contributors", async (req, res) => {
+  try {
+    if (!db) db = client.db(DB_NAME);
+    const contributors = await db
+      .collection("lessons")
+      .aggregate([
+        { $match: { visibility: { $ne: "Private" } } },
+        {
+          $group: {
+            _id: "$creatorEmail",
+            creatorName: { $first: "$creatorName" },
+            creatorPhoto: { $first: "$creatorPhoto" },
+            creatorEmail: { $first: "$creatorEmail" },
+            totalLessons: { $sum: 1 },
+            totalLikes: { $sum: { $ifNull: ["$likesCount", 0] } },
+            totalSaves: { $sum: { $ifNull: ["$savesCount", 0] } },
+          },
+        },
+        { $sort: { totalLessons: -1, totalLikes: -1 } },
+        { $limit: 4 },
+      ])
+      .toArray();
+
+    res.json(contributors);
+  } catch (err) {
+    console.error("Error fetching top contributors:", err);
+    res.status(500).json({ message: "Failed to fetch top contributors" });
+  }
+});
+
+// 3. Dynamic Section: Most Saved Lessons
+app.get("/lessons/most-saved", async (req, res) => {
+  try {
+    if (!db) db = client.db(DB_NAME);
+    const mostSaved = await db
+      .collection("lessons")
+      .find({ visibility: { $ne: "Private" } })
+      .sort({ savesCount: -1 })
+      .limit(4)
+      .toArray();
+
+    res.json(mostSaved);
+  } catch (err) {
+    console.error("Error fetching most saved lessons:", err);
+    res.status(500).json({ message: "Failed to fetch most saved lessons" });
+  }
+});
+
+// 4. Get all lessons with optional filtering / sorting / pagination
 app.get("/lessons", async (req, res) => {
   try {
     if (!db) db = client.db(DB_NAME);
@@ -93,7 +141,7 @@ app.get("/lessons", async (req, res) => {
       ];
     }
 
-    let sortOption = { createdAt: -1 }; // newest by default
+    let sortOption = { createdAt: -1 };
     if (sort === "most-saved") {
       sortOption = { savesCount: -1 };
     } else if (sort === "most-liked") {
@@ -127,7 +175,7 @@ app.get("/lessons", async (req, res) => {
   }
 });
 
-// Get single lesson by id
+// 5. Get single lesson by id
 app.get("/lessons/:id", async (req, res) => {
   try {
     if (!db) db = client.db(DB_NAME);
