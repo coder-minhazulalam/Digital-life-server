@@ -1073,6 +1073,126 @@ app.delete("/admin/users/:id", async (req, res) => {
   }
 });
 
+// ==========================================
+// 16. ADMIN: Manage Lessons
+// ==========================================
+
+function getLessonQuery(id) {
+  try {
+    return { $or: [{ _id: new ObjectId(id) }, { _id: id }] };
+  } catch (e) {
+    return { _id: id };
+  }
+}
+
+// GET all lessons for admin (includes private, search, category, access, and featured filter)
+app.get("/admin/lessons", async (req, res) => {
+  try {
+    if (!db) db = client.db(DB_NAME);
+
+    const { search, category, access, featured, visibility } = req.query;
+    const query = {};
+
+    if (search && search.trim()) {
+      const s = search.trim();
+      query.$or = [
+        { title: { $regex: s, $options: "i" } },
+        { creatorEmail: { $regex: s, $options: "i" } },
+        { creatorName: { $regex: s, $options: "i" } },
+      ];
+    }
+
+    if (category && category !== "all") {
+      query.category = category;
+    }
+
+    if (access && access !== "all") {
+      query.access = access; // "Free" or "Premium"
+    }
+
+    if (visibility && visibility !== "all") {
+      query.visibility = visibility; // "Public" or "Private"
+    }
+
+    if (featured && featured !== "all") {
+      if (featured === "featured") {
+        query.$or = [{ isFeatured: true }, { isFeatured: "true" }];
+      } else if (featured === "standard") {
+        query.$or = [{ isFeatured: { $ne: true } }, { isFeatured: { $exists: false } }];
+      }
+    }
+
+    const lessons = await db
+      .collection("lessons")
+      .find(query)
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    res.json(lessons);
+  } catch (err) {
+    console.error("Error fetching admin lessons:", err);
+    res.status(500).json({ message: "Failed to fetch lessons" });
+  }
+});
+
+// Toggle lesson isFeatured status
+app.patch("/admin/lessons/:id/featured", async (req, res) => {
+  try {
+    if (!db) db = client.db(DB_NAME);
+    const { id } = req.params;
+    const { isFeatured } = req.body;
+
+    const query = getLessonQuery(id);
+    const update = {
+      $set: {
+        isFeatured: Boolean(isFeatured),
+        featuredAt: isFeatured ? new Date() : null,
+        updatedAt: new Date(),
+      },
+    };
+
+    const result = await db.collection("lessons").updateOne(query, update);
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ message: "Lesson not found" });
+    }
+
+    res.json({
+      success: true,
+      isFeatured: Boolean(isFeatured),
+      message: `Lesson is now ${isFeatured ? "Featured on homepage" : "unfeatured"}.`,
+    });
+  } catch (err) {
+    console.error("Error updating lesson featured status:", err);
+    res.status(500).json({ message: "Failed to update featured status" });
+  }
+});
+
+// Admin delete lesson
+app.delete("/admin/lessons/:id", async (req, res) => {
+  try {
+    if (!db) db = client.db(DB_NAME);
+    const { id } = req.params;
+
+    const query = getLessonQuery(id);
+    const result = await db.collection("lessons").deleteOne(query);
+
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ message: "Lesson not found" });
+    }
+
+    // Also delete any reports associated with this lesson
+    try {
+      await db.collection("lessonsReports").deleteMany({ lessonId: id });
+    } catch (ignoreErr) {}
+
+    res.json({ success: true, message: "Lesson deleted successfully" });
+  } catch (err) {
+    console.error("Error deleting lesson by admin:", err);
+    res.status(500).json({ message: "Failed to delete lesson" });
+  }
+});
+
 connectToMongoDB().then(() => {
   app.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
