@@ -356,6 +356,7 @@ app.post("/lessons", async (req, res) => {
       emotionalTone,
       visibility,
       accessLevel,
+      image,
       creatorName,
       creatorEmail,
       creatorPhoto,
@@ -373,6 +374,7 @@ app.post("/lessons", async (req, res) => {
       emotionalTone,
       visibility: visibility || "Public",
       accessLevel: accessLevel || "Free",
+      image: image ? image.trim() : "",
       isFeatured: false,
       likes: [],
       likesCount: 0,
@@ -410,6 +412,7 @@ app.put("/lessons/:id", async (req, res) => {
       emotionalTone,
       visibility,
       accessLevel,
+      image,
     } = req.body;
 
     const query = ObjectId.isValid(id)
@@ -423,6 +426,7 @@ app.put("/lessons/:id", async (req, res) => {
       ...(emotionalTone !== undefined && { emotionalTone }),
       ...(visibility !== undefined && { visibility }),
       ...(accessLevel !== undefined && { accessLevel }),
+      ...(image !== undefined && { image: image ? image.trim() : "" }),
       updatedAt: new Date(),
     };
 
