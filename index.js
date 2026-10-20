@@ -936,6 +936,143 @@ app.get("/admin/stats", async (req, res) => {
   }
 });
 
+// ==========================================
+// 15. ADMIN: Manage Users
+// ==========================================
+
+// Helper to build id query
+function getUserQuery(id) {
+  try {
+    return { $or: [{ _id: new ObjectId(id) }, { _id: id }, { id: id }] };
+  } catch (e) {
+    return { $or: [{ _id: id }, { id: id }] };
+  }
+}
+
+// GET all users with filtering, search, and lesson counts
+app.get("/admin/users", async (req, res) => {
+  try {
+    if (!db) db = client.db(DB_NAME);
+
+    const { search, role, status } = req.query;
+    const query = {};
+
+    if (search && search.trim()) {
+      const s = search.trim();
+      query.$or = [
+        { name: { $regex: s, $options: "i" } },
+        { email: { $regex: s, $options: "i" } },
+      ];
+    }
+
+    if (role && role !== "all") {
+      query.role = role;
+    }
+
+    if (status && status !== "all") {
+      if (status === "premium") {
+        query.isPremium = true;
+      } else if (status === "free") {
+        query.$or = [{ isPremium: { $ne: true } }, { isPremium: { $exists: false } }];
+      }
+    }
+
+    const users = await db.collection("user").find(query).sort({ createdAt: -1 }).toArray();
+
+    // Attach lessons count for each user
+    const usersWithCounts = await Promise.all(
+      users.map(async (u) => {
+        const lessonCount = await db.collection("lessons").countDocuments({ creatorEmail: u.email });
+        return {
+          ...u,
+          lessonCount,
+        };
+      })
+    );
+
+    res.json(usersWithCounts);
+  } catch (err) {
+    console.error("Error fetching admin users:", err);
+    res.status(500).json({ message: "Failed to fetch users" });
+  }
+});
+
+// Update user role (admin / user)
+app.patch("/admin/users/:id/role", async (req, res) => {
+  try {
+    if (!db) db = client.db(DB_NAME);
+    const { id } = req.params;
+    const { role } = req.body;
+
+    if (!role || !["admin", "user"].includes(role)) {
+      return res.status(400).json({ message: "Invalid role specified" });
+    }
+
+    const query = getUserQuery(id);
+    const update = { $set: { role, updatedAt: new Date() } };
+
+    const result = await db.collection("user").updateOne(query, update);
+    await db.collection("users").updateOne(query, update);
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    res.json({ success: true, message: `Role updated to ${role} successfully` });
+  } catch (err) {
+    console.error("Error updating user role:", err);
+    res.status(500).json({ message: "Failed to update user role" });
+  }
+});
+
+// Update user premium status
+app.patch("/admin/users/:id/premium", async (req, res) => {
+  try {
+    if (!db) db = client.db(DB_NAME);
+    const { id } = req.params;
+    const { isPremium } = req.body;
+
+    const query = getUserQuery(id);
+    const update = { $set: { isPremium: Boolean(isPremium), updatedAt: new Date() } };
+
+    const result = await db.collection("user").updateOne(query, update);
+    await db.collection("users").updateOne(query, update);
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    res.json({
+      success: true,
+      message: `User premium status updated to ${isPremium ? "Premium" : "Free"}`,
+    });
+  } catch (err) {
+    console.error("Error updating user premium status:", err);
+    res.status(500).json({ message: "Failed to update premium status" });
+  }
+});
+
+// Delete user
+app.delete("/admin/users/:id", async (req, res) => {
+  try {
+    if (!db) db = client.db(DB_NAME);
+    const { id } = req.params;
+
+    const query = getUserQuery(id);
+    const result = await db.collection("user").deleteOne(query);
+    await db.collection("users").deleteOne(query);
+
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    res.json({ success: true, message: "User deleted successfully" });
+  } catch (err) {
+    console.error("Error deleting user:", err);
+    res.status(500).json({ message: "Failed to delete user" });
+  }
+});
+
 connectToMongoDB().then(() => {
   app.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
