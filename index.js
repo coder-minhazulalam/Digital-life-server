@@ -872,69 +872,48 @@ app.post("/reports", async (req, res) => {
 });
 
 // ==========================================
-// 14. ADMIN MODULE ENDPOINTS
+// 14. ADMIN: Platform Overview Statistics
 // ==========================================
-
-// 14.1 Admin Platform Statistics
 app.get("/admin/stats", async (req, res) => {
   try {
     if (!db) db = client.db(DB_NAME);
 
-    // Users count
-    const totalUsers = await db.collection("user").countDocuments();
-    const premiumUsers = await db.collection("user").countDocuments({ isPremium: true });
-
-    // Lessons count
-    const totalLessons = await db.collection("lessons").countDocuments();
-    const publicLessons = await db.collection("lessons").countDocuments({ visibility: { $ne: "Private" } });
-    const featuredLessons = await db.collection("lessons").countDocuments({
-      $or: [{ isFeatured: true }, { isFeatured: "true" }],
-    });
-
-    // Reports count
-    const totalReports = await db.collection("lessonsReports").countDocuments();
-    const pendingReports = await db.collection("lessonsReports").countDocuments({ status: "pending" });
-
-    // Category breakdown
-    const categoryStats = await db
-      .collection("lessons")
-      .aggregate([
+    const [
+      totalUsers,
+      premiumUsers,
+      totalLessons,
+      publicLessons,
+      featuredLessons,
+      totalReports,
+      pendingReports,
+      totalComments,
+      categoryStats,
+      engagementStats,
+      recentUsers,
+      recentLessons,
+    ] = await Promise.all([
+      db.collection("user").countDocuments(),
+      db.collection("user").countDocuments({ isPremium: true }),
+      db.collection("lessons").countDocuments(),
+      db.collection("lessons").countDocuments({ visibility: { $ne: "Private" } }),
+      db.collection("lessons").countDocuments({ $or: [{ isFeatured: true }, { isFeatured: "true" }] }),
+      db.collection("lessonsReports").countDocuments(),
+      db.collection("lessonsReports").countDocuments({ status: "pending" }),
+      db.collection("comments").countDocuments(),
+      db.collection("lessons").aggregate([
         { $group: { _id: "$category", count: { $sum: 1 } } },
         { $sort: { count: -1 } },
-      ])
-      .toArray();
-
-    // Engagement totals
-    const engagementStats = await db
-      .collection("lessons")
-      .aggregate([
-        {
-          $group: {
-            _id: null,
-            totalLikes: { $sum: { $ifNull: ["$likesCount", 0] } },
-            totalSaves: { $sum: { $ifNull: ["$savesCount", 0] } },
-          },
-        },
-      ])
-      .toArray();
-
-    // Total comments
-    const totalComments = await db.collection("comments").countDocuments();
-
-    // Recent activity
-    const recentUsers = await db
-      .collection("user")
-      .find({})
-      .sort({ createdAt: -1 })
-      .limit(5)
-      .toArray();
-
-    const recentLessons = await db
-      .collection("lessons")
-      .find({})
-      .sort({ createdAt: -1 })
-      .limit(5)
-      .toArray();
+      ]).toArray(),
+      db.collection("lessons").aggregate([
+        { $group: {
+          _id: null,
+          totalLikes: { $sum: { $ifNull: ["$likesCount", 0] } },
+          totalSaves: { $sum: { $ifNull: ["$savesCount", 0] } },
+        }},
+      ]).toArray(),
+      db.collection("user").find({}).sort({ createdAt: -1 }).limit(5).toArray(),
+      db.collection("lessons").find({}).sort({ createdAt: -1 }).limit(5).toArray(),
+    ]);
 
     res.json({
       totalUsers,
@@ -957,339 +936,9 @@ app.get("/admin/stats", async (req, res) => {
   }
 });
 
-// 14.2 Admin: Get all users
-app.get("/admin/users", async (req, res) => {
-  try {
-    if (!db) db = client.db(DB_NAME);
-
-    // Fetch from 'user' collection (primary for Better Auth)
-    const users = await db
-      .collection("user")
-      .find({})
-      .sort({ createdAt: -1 })
-      .toArray();
-
-    // Map and count user lessons
-    const userEmails = users.map((u) => u.email).filter(Boolean);
-    const lessonCounts = await db
-      .collection("lessons")
-      .aggregate([
-        { $match: { creatorEmail: { $in: userEmails } } },
-        { $group: { _id: "$creatorEmail", count: { $sum: 1 } } },
-      ])
-      .toArray();
-
-    const countMap = new Map();
-    lessonCounts.forEach((c) => countMap.set(c._id, c.count));
-
-    const enrichedUsers = users.map((u) => ({
-      ...u,
-      lessonsCount: countMap.get(u.email) || 0,
-    }));
-
-    res.json(enrichedUsers);
-  } catch (err) {
-    console.error("Error fetching admin users:", err);
-    res.status(500).json({ message: "Failed to fetch users" });
-  }
-});
-
-// 14.3 Admin: Update user role (promote to admin or demote to user)
-app.patch("/admin/users/:id/role", async (req, res) => {
-  try {
-    if (!db) db = client.db(DB_NAME);
-    const { id } = req.params;
-    const { role } = req.body;
-
-    if (!role || !["admin", "user"].includes(role)) {
-      return res.status(400).json({ message: "Role must be 'admin' or 'user'" });
-    }
-
-    const query = ObjectId.isValid(id) ? { _id: new ObjectId(id) } : { _id: id };
-    const user = await db.collection("user").findOne(query);
-
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
-    }
-
-    await db.collection("user").updateOne(query, {
-      $set: { role, updatedAt: new Date() },
-    });
-
-    // Also sync in 'users' collection if present
-    if (user.email) {
-      await db.collection("users").updateOne(
-        { email: user.email },
-        { $set: { role, updatedAt: new Date() } }
-      );
-    }
-
-    res.json({
-      success: true,
-      message: `User role successfully updated to ${role}`,
-    });
-  } catch (err) {
-    console.error("Error updating user role:", err);
-    res.status(500).json({ message: "Failed to update user role" });
-  }
-});
-
-// 14.4 Admin: Delete a user
-app.delete("/admin/users/:id", async (req, res) => {
-  try {
-    if (!db) db = client.db(DB_NAME);
-    const { id } = req.params;
-
-    const query = ObjectId.isValid(id) ? { _id: new ObjectId(id) } : { _id: id };
-    const user = await db.collection("user").findOne(query);
-
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
-    }
-
-    // Delete user from auth collections
-    await db.collection("user").deleteOne(query);
-    if (user.email) {
-      await db.collection("users").deleteOne({ email: user.email });
-      // Delete user's sessions/accounts
-      await db.collection("session").deleteMany({ userId: id });
-    }
-
-    res.json({ success: true, message: "User deleted successfully" });
-  } catch (err) {
-    console.error("Error deleting user:", err);
-    res.status(500).json({ message: "Failed to delete user" });
-  }
-});
-
-// 14.5 Admin: Get all lessons (with search, category, and review status)
-app.get("/admin/lessons", async (req, res) => {
-  try {
-    if (!db) db = client.db(DB_NAME);
-    const { search, category, filter } = req.query;
-
-    let query = {};
-
-    if (category && category !== "All") {
-      query.category = category;
-    }
-
-    if (filter === "featured") {
-      query.$or = [{ isFeatured: true }, { isFeatured: "true" }];
-    } else if (filter === "reviewed") {
-      query.$or = [{ isReviewed: true }, { isReviewed: "true" }];
-    } else if (filter === "unreviewed") {
-      query.$or = [{ isReviewed: { $ne: true } }, { isReviewed: false }];
-    } else if (filter === "premium") {
-      query.accessLevel = "Premium";
-    }
-
-    if (search && search.trim() !== "") {
-      const searchRegex = new RegExp(search.trim(), "i");
-      query.$and = [
-        ...(query.$and || []),
-        {
-          $or: [
-            { title: searchRegex },
-            { description: searchRegex },
-            { creatorName: searchRegex },
-            { creatorEmail: searchRegex },
-          ],
-        },
-      ];
-    }
-
-    const lessons = await db
-      .collection("lessons")
-      .find(query)
-      .sort({ createdAt: -1 })
-      .toArray();
-
-    res.json(lessons);
-  } catch (err) {
-    console.error("Error fetching admin lessons:", err);
-    res.status(500).json({ message: "Failed to fetch lessons" });
-  }
-});
-
-// 14.6 Admin: Toggle isFeatured on a lesson
-app.patch("/admin/lessons/:id/featured", async (req, res) => {
-  try {
-    if (!db) db = client.db(DB_NAME);
-    const { id } = req.params;
-    const { isFeatured } = req.body;
-
-    const query = ObjectId.isValid(id)
-      ? { $or: [{ _id: new ObjectId(id) }, { _id: id }] }
-      : { _id: id };
-
-    const result = await db.collection("lessons").updateOne(query, {
-      $set: { isFeatured: Boolean(isFeatured), updatedAt: new Date() },
-    });
-
-    if (result.matchedCount === 0) {
-      return res.status(404).json({ message: "Lesson not found" });
-    }
-
-    res.json({
-      success: true,
-      isFeatured: Boolean(isFeatured),
-      message: `Lesson ${isFeatured ? "marked as Featured" : "removed from Featured"}`,
-    });
-  } catch (err) {
-    console.error("Error toggling featured status:", err);
-    res.status(500).json({ message: "Failed to toggle featured status" });
-  }
-});
-
-// 14.7 Admin: Mark lesson as reviewed
-app.patch("/admin/lessons/:id/reviewed", async (req, res) => {
-  try {
-    if (!db) db = client.db(DB_NAME);
-    const { id } = req.params;
-    const { isReviewed } = req.body;
-
-    const query = ObjectId.isValid(id)
-      ? { $or: [{ _id: new ObjectId(id) }, { _id: id }] }
-      : { _id: id };
-
-    const result = await db.collection("lessons").updateOne(query, {
-      $set: { isReviewed: Boolean(isReviewed), updatedAt: new Date() },
-    });
-
-    if (result.matchedCount === 0) {
-      return res.status(404).json({ message: "Lesson not found" });
-    }
-
-    res.json({
-      success: true,
-      isReviewed: Boolean(isReviewed),
-      message: `Lesson review status updated to ${Boolean(isReviewed)}`,
-    });
-  } catch (err) {
-    console.error("Error updating review status:", err);
-    res.status(500).json({ message: "Failed to update review status" });
-  }
-});
-
-// 14.8 Admin: Delete a lesson
-app.delete("/admin/lessons/:id", async (req, res) => {
-  try {
-    if (!db) db = client.db(DB_NAME);
-    const { id } = req.params;
-
-    const query = ObjectId.isValid(id)
-      ? { $or: [{ _id: new ObjectId(id) }, { _id: id }] }
-      : { _id: id };
-
-    const result = await db.collection("lessons").deleteOne(query);
-
-    if (result.deletedCount === 0) {
-      return res.status(404).json({ message: "Lesson not found" });
-    }
-
-    // Also delete associated comments, favorites and reports
-    await db.collection("comments").deleteMany({ lessonId: String(id) });
-    await db.collection("favorites").deleteMany({ lessonId: String(id) });
-    await db.collection("lessonsReports").deleteMany({ lessonId: String(id) });
-
-    res.json({ success: true, message: "Lesson and associated data deleted" });
-  } catch (err) {
-    console.error("Error deleting lesson by admin:", err);
-    res.status(500).json({ message: "Failed to delete lesson" });
-  }
-});
-
-// 14.9 Admin: Get reported lessons queue
-app.get("/admin/reports", async (req, res) => {
-  try {
-    if (!db) db = client.db(DB_NAME);
-
-    const reports = await db
-      .collection("lessonsReports")
-      .find({})
-      .sort({ timestamp: -1 })
-      .toArray();
-
-    // Enrich reports with current lesson info if it exists
-    const lessonIds = reports.map((r) => r.lessonId).filter(Boolean);
-    const objectIds = lessonIds.filter((id) => ObjectId.isValid(id)).map((id) => new ObjectId(id));
-
-    const lessons = await db
-      .collection("lessons")
-      .find({
-        $or: [{ _id: { $in: objectIds } }, { _id: { $in: lessonIds } }],
-      })
-      .toArray();
-
-    const lessonMap = new Map();
-    lessons.forEach((l) => lessonMap.set(String(l._id), l));
-
-    const enriched = reports.map((r) => ({
-      ...r,
-      lessonDetails: lessonMap.get(String(r.lessonId)) || null,
-    }));
-
-    res.json(enriched);
-  } catch (err) {
-    console.error("Error fetching reports:", err);
-    res.status(500).json({ message: "Failed to fetch reports" });
-  }
-});
-
-// 14.10 Admin: Update report status (ignore / dismiss / resolve)
-app.patch("/admin/reports/:id/status", async (req, res) => {
-  try {
-    if (!db) db = client.db(DB_NAME);
-    const { id } = req.params;
-    const { status } = req.body;
-
-    if (!status || !["resolved", "ignored", "pending"].includes(status)) {
-      return res.status(400).json({ message: "Status must be 'resolved', 'ignored', or 'pending'" });
-    }
-
-    const query = ObjectId.isValid(id) ? { _id: new ObjectId(id) } : { _id: id };
-    const result = await db.collection("lessonsReports").updateOne(query, {
-      $set: { status, updatedAt: new Date() },
-    });
-
-    if (result.matchedCount === 0) {
-      return res.status(404).json({ message: "Report not found" });
-    }
-
-    res.json({
-      success: true,
-      status,
-      message: `Report marked as ${status}`,
-    });
-  } catch (err) {
-    console.error("Error updating report status:", err);
-    res.status(500).json({ message: "Failed to update report status" });
-  }
-});
-
-// 14.11 Admin: Delete report
-app.delete("/admin/reports/:id", async (req, res) => {
-  try {
-    if (!db) db = client.db(DB_NAME);
-    const { id } = req.params;
-
-    const query = ObjectId.isValid(id) ? { _id: new ObjectId(id) } : { _id: id };
-    const result = await db.collection("lessonsReports").deleteOne(query);
-
-    if (result.deletedCount === 0) {
-      return res.status(404).json({ message: "Report not found" });
-    }
-
-    res.json({ success: true, message: "Report deleted" });
-  } catch (err) {
-    console.error("Error deleting report:", err);
-    res.status(500).json({ message: "Failed to delete report" });
-  }
-});
-
 connectToMongoDB().then(() => {
   app.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
   });
 });
+
