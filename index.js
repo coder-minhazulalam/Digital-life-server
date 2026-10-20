@@ -1193,6 +1193,144 @@ app.delete("/admin/lessons/:id", async (req, res) => {
   }
 });
 
+// ==========================================
+// 17. ADMIN: Reported Content Management
+// ==========================================
+
+function getReportQuery(id) {
+  try {
+    return { $or: [{ _id: new ObjectId(id) }, { _id: id }] };
+  } catch (e) {
+    return { _id: id };
+  }
+}
+
+// GET all reports with filtering and lesson existence check
+app.get("/admin/reports", async (req, res) => {
+  try {
+    if (!db) db = client.db(DB_NAME);
+
+    const { status, search } = req.query;
+    const query = {};
+
+    if (status && status !== "all") {
+      query.status = status;
+    }
+
+    if (search && search.trim()) {
+      const s = search.trim();
+      query.$or = [
+        { lessonTitle: { $regex: s, $options: "i" } },
+        { reporterEmail: { $regex: s, $options: "i" } },
+        { reason: { $regex: s, $options: "i" } },
+      ];
+    }
+
+    const reports = await db
+      .collection("lessonsReports")
+      .find(query)
+      .sort({ timestamp: -1 })
+      .toArray();
+
+    // Attach whether the lesson still exists in DB
+    const enrichedReports = await Promise.all(
+      reports.map(async (r) => {
+        let lessonExists = false;
+        try {
+          const lQuery = getLessonQuery(r.lessonId);
+          const l = await db.collection("lessons").findOne(lQuery);
+          lessonExists = Boolean(l);
+        } catch (e) {}
+        return {
+          ...r,
+          lessonExists,
+        };
+      })
+    );
+
+    res.json(enrichedReports);
+  } catch (err) {
+    console.error("Error fetching admin reports:", err);
+    res.status(500).json({ message: "Failed to fetch reports" });
+  }
+});
+
+// Update report status (pending, resolved, dismissed)
+app.patch("/admin/reports/:id/status", async (req, res) => {
+  try {
+    if (!db) db = client.db(DB_NAME);
+    const { id } = req.params;
+    const { status } = req.body;
+
+    if (!["pending", "resolved", "dismissed"].includes(status)) {
+      return res.status(400).json({ message: "Invalid status value" });
+    }
+
+    const query = getReportQuery(id);
+    const update = { $set: { status, reviewedAt: new Date() } };
+
+    const result = await db.collection("lessonsReports").updateOne(query, update);
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ message: "Report not found" });
+    }
+
+    res.json({
+      success: true,
+      status,
+      message: `Report status updated to ${status}.`,
+    });
+  } catch (err) {
+    console.error("Error updating report status:", err);
+    res.status(500).json({ message: "Failed to update report status" });
+  }
+});
+
+// Delete a single report
+app.delete("/admin/reports/:id", async (req, res) => {
+  try {
+    if (!db) db = client.db(DB_NAME);
+    const { id } = req.params;
+
+    const query = getReportQuery(id);
+    const result = await db.collection("lessonsReports").deleteOne(query);
+
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ message: "Report not found" });
+    }
+
+    res.json({ success: true, message: "Report removed successfully" });
+  } catch (err) {
+    console.error("Error deleting report:", err);
+    res.status(500).json({ message: "Failed to delete report" });
+  }
+});
+
+// Delete offending lesson and resolve all its reports
+app.delete("/admin/reports/lesson/:lessonId", async (req, res) => {
+  try {
+    if (!db) db = client.db(DB_NAME);
+    const { lessonId } = req.params;
+
+    const lQuery = getLessonQuery(lessonId);
+    await db.collection("lessons").deleteOne(lQuery);
+
+    // Mark all reports for this lesson as resolved
+    await db.collection("lessonsReports").updateMany(
+      { lessonId: String(lessonId) },
+      { $set: { status: "resolved", actionTaken: "lesson_deleted", reviewedAt: new Date() } }
+    );
+
+    res.json({
+      success: true,
+      message: "Offending lesson deleted and associated reports marked resolved.",
+    });
+  } catch (err) {
+    console.error("Error deleting reported lesson:", err);
+    res.status(500).json({ message: "Failed to delete reported lesson" });
+  }
+});
+
 connectToMongoDB().then(() => {
   app.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
