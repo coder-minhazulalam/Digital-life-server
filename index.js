@@ -20,18 +20,37 @@ if (!MONGO_URI) {
 
 const client = new MongoClient(MONGO_URI);
 let db;
+let clientPromise = client.connect().then(() => {
+  db = client.db(DB_NAME);
+  console.log(`Connected successfully to MongoDB database: "${DB_NAME}"`);
+  return db;
+}).catch((err) => {
+  console.error("MongoDB connection error:", err.message);
+});
 
 async function connectToMongoDB() {
   try {
-    await client.connect();
+    if (db) return db;
+    await clientPromise;
     db = client.db(DB_NAME);
-    console.log(`Connected successfully to MongoDB database: "${DB_NAME}"`);
     return db;
   } catch (err) {
-    console.error("MongoDB connection error:", err.message);
-    process.exit(1);
+    console.error("MongoDB connectToMongoDB error:", err.message);
   }
 }
+
+// Serverless DB connection middleware
+app.use(async (req, res, next) => {
+  try {
+    if (!db) {
+      await connectToMongoDB();
+    }
+    next();
+  } catch (err) {
+    console.error("DB middleware error:", err);
+    res.status(500).json({ message: "Failed to connect to database" });
+  }
+});
 
 app.get("/", (req, res) => {
   res.send({ status: "ok", message: "Digital Life Lessons API Server is running" });
@@ -1372,9 +1391,13 @@ app.delete("/admin/reports/lesson/:lessonId", async (req, res) => {
   }
 });
 
-connectToMongoDB().then(() => {
-  app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
+if (!process.env.VERCEL) {
+  connectToMongoDB().then(() => {
+    app.listen(PORT, () => {
+      console.log(`Server is running on port ${PORT}`);
+    });
   });
-});
+}
+
+module.exports = app;
 
