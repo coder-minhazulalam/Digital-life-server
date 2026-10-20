@@ -1107,7 +1107,7 @@ app.get("/admin/lessons", async (req, res) => {
     }
 
     if (access && access !== "all") {
-      query.access = access; // "Free" or "Premium"
+      query.$or = [{ access: access }, { accessLevel: access }];
     }
 
     if (visibility && visibility !== "all") {
@@ -1132,6 +1132,43 @@ app.get("/admin/lessons", async (req, res) => {
   } catch (err) {
     console.error("Error fetching admin lessons:", err);
     res.status(500).json({ message: "Failed to fetch lessons" });
+  }
+});
+
+// Toggle or update lesson access level (Free / Premium)
+app.patch("/admin/lessons/:id/access", async (req, res) => {
+  try {
+    if (!db) db = client.db(DB_NAME);
+    const { id } = req.params;
+    const { accessLevel } = req.body;
+
+    if (!["Free", "Premium"].includes(accessLevel)) {
+      return res.status(400).json({ message: "Invalid accessLevel. Must be 'Free' or 'Premium'." });
+    }
+
+    const query = getLessonQuery(id);
+    const update = {
+      $set: {
+        accessLevel,
+        access: accessLevel,
+        updatedAt: new Date(),
+      },
+    };
+
+    const result = await db.collection("lessons").updateOne(query, update);
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ message: "Lesson not found" });
+    }
+
+    res.json({
+      success: true,
+      accessLevel,
+      message: `Lesson access changed to ${accessLevel} successfully.`,
+    });
+  } catch (err) {
+    console.error("Error updating lesson access level:", err);
+    res.status(500).json({ message: "Failed to update access level" });
   }
 });
 
